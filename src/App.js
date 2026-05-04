@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -26,13 +26,17 @@ import {
   Calendar,
   Target,
   TrendingDown,
+  Timer,
+  Users,
+  Lightbulb,
 } from "lucide-react";
 
-// --- CONFIG ---
+// --- DATABASE CONFIG ---
 const SUPABASE_URL = "https://glprsxjtsqzpjintupls.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_D03Pur4oIlyp2UJiNpdwYg_GYDWs_3o";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// --- WHOP CONFIG ---
 const WHOP_CLIENT_ID = "app_S2qd4ooY1zM2nz";
 const WHOP_API_KEY =
   "apik_Le7CeVbCgB9Y0_C4845077_C_cf0e1bec2c7b1096b6aa62503637fcdf2b184f591b157f52492a7173486a8a";
@@ -47,82 +51,110 @@ export default function App() {
   const [isSubscriber, setIsSubscriber] = useState(false);
   const [stores, setStores] = useState([]);
   const [userLoc, setUserLoc] = useState(null);
+  const [loading, setLoading] = useState(false);
   const [isMagicLoading, setIsMagicLoading] = useState(false);
   const [magicText, setMagicText] = useState("");
-  const [weeklyEarnings, setWeeklyEarnings] = useState(540.0);
-  const [weeklyScore, setWeeklyScore] = useState(82);
+  const [showLegal, setShowLegal] = useState(false);
+
+  // Feature 2 & 4: Performance State
+  const [weeklyEarnings, setWeeklyEarnings] = useState(542.5);
+  const [weeklyScore, setWeeklyScore] = useState(84);
+  const [batchCount, setBatchCount] = useState(12);
+
+  // Feature 1: Decision Engine State
   const [batchForm, setBatchForm] = useState({
     pay: "",
     items: "",
     miles: "",
     storeId: "",
   });
-  const [mySessionId] = useState(Math.random().toString(36).substring(7));
+
+  const magicPhases = [
+    "Authenticating Neural Link...",
+    "Querying Satellite Nodes...",
+    "Parsing Market Volatility...",
+    "Optimizing Batch Clusters...",
+  ];
 
   // --- 1. WHOP AUTH & SESSION LOCK ---
   const handleWhopLogin = () => {
-    const cleanUrl = window.location.origin + "/";
+    const origin = window.location.origin;
+    const cleanUrl = origin.endsWith("/") ? origin : origin + "/";
     window.location.href = `https://whop.com/oauth?client_id=${WHOP_CLIENT_ID}&redirect_uri=${encodeURIComponent(
       cleanUrl
     )}&response_type=code&scope=identify`;
   };
 
   const enforceSingleSession = async (email) => {
+    const myId = Math.random().toString(36).substring(7);
     await supabase
       .from("profiles")
-      .upsert(
-        { email: email, last_session_id: mySessionId },
-        { onConflict: "email" }
-      );
+      .upsert({ email: email, last_session_id: myId }, { onConflict: "email" });
     const interval = setInterval(async () => {
       const { data } = await supabase
         .from("profiles")
         .select("last_session_id")
         .eq("email", email)
         .single();
-      if (data && data.last_session_id !== mySessionId) {
-        alert("Session Expired: Logged in on another device.");
+      if (data && data.last_session_id !== myId) {
+        alert("Session conflict: Logged in on another device.");
         window.location.href = window.location.origin;
       }
-    }, 15000);
+    }, 20000);
   };
 
-  // --- 2. BATCH DECISION ENGINE ---
+  // --- 2. BATCH DECISION ENGINE (FEATURE 1) ---
   const getDecision = () => {
     const { pay, items, miles } = batchForm;
     if (!pay || !items || !miles) return null;
     const hourlyTarget = 30.0;
-    const estMins = parseInt(items) + 10 + parseFloat(miles) * 2;
+    const estMins = parseInt(items) + 12 + parseFloat(miles) * 2.5; // Incl. driving
     const estHourly = (parseFloat(pay) / estMins) * 60;
     const diff = Math.abs(hourlyTarget - estHourly);
-    if (estHourly >= hourlyTarget)
+
+    if (estHourly >= hourlyTarget) {
       return {
         type: "ACCEPT",
         color: "#22c55e",
-        diff,
-        text: "PROFITABLE. Matches your $30/hr strategy.",
+        text: `STRATEGIC MATCH. +$${diff.toFixed(2)}/hr above target.`,
       };
-    return {
-      type: "SKIP",
-      color: "#ef4444",
-      diff,
-      text: `LOSS: -$${diff.toFixed(2)}/hr. Below your target.`,
-    };
+    } else {
+      return {
+        type: "SKIP",
+        color: "#ef4444",
+        text: `LOSS DETECTED: -$${diff.toFixed(
+          2
+        )}/hr. A better batch is coming.`,
+      };
+    }
   };
 
-  // --- 3. CORE APP LOGIC ---
+  // --- 3. NEURAL RADAR ENGINE (FEATURE 3) ---
+  const calculateIntel = (store) => {
+    const hr = new Date().getHours();
+    const day = new Date().getDay();
+    const isOpen =
+      hr >= (store.open_hour || 8) && hr < (store.close_hour || 21);
+    if (!isOpen) return { pct: 0, color: "#1e293b", label: "OFFLINE" };
+
+    let score = store.brand_quality || 60;
+    if (hr >= 7 && hr <= 10) score += 20; // Morning Drop
+    if (hr >= 16 && hr <= 19) score += 15; // Evening Rush
+    if (day === 0) score += 15; // Sunday
+
+    const final = Math.min(Math.round(score), 99);
+    const color = final > 85 ? "#22c55e" : final > 60 ? "#fbbf24" : "#f97316";
+    return { pct: final, color, label: final > 85 ? "CRITICAL" : "ACTIVE" };
+  };
+
   const startProScan = async () => {
     setIsMagicLoading(true);
-    const phases = [
-      "Authenticating...",
-      "Syncing Satellite...",
-      "Parsing Market Drops...",
-    ];
-    phases.forEach((t, i) => setTimeout(() => setMagicText(t), i * 900));
+    magicPhases.forEach((t, i) => setTimeout(() => setMagicText(t), i * 900));
 
     navigator.geolocation.getCurrentPosition(
       async (p) => {
-        const { latitude: lat, longitude: lng } = p.coords;
+        const lat = p.coords.latitude;
+        const lng = p.coords.longitude;
         setUserLoc({ lat, lng });
         const { data: raw } = await supabase.rpc("get_nearby_stores", {
           user_lat: lat,
@@ -141,21 +173,22 @@ export default function App() {
                     )
                 )
                 .map((s) => {
-                  const hr = new Date().getHours();
-                  const isOpen =
-                    hr >= (s.open_hour || 8) && hr < (s.close_hour || 21);
-                  return {
-                    ...s,
-                    pct: isOpen
-                      ? Math.min(
-                          Math.round(
-                            (s.brand_quality || 60) * (hr < 10 ? 1.35 : 1)
-                          ),
-                          99
-                        )
-                      : 0,
-                    dist: (Math.random() * 5).toFixed(1),
-                  };
+                  const intel = calculateIntel(s);
+                  const R = 3958.8;
+                  const dLat = ((s.latitude - lat) * Math.PI) / 180;
+                  const dLon = ((s.longitude - lng) * Math.PI) / 180;
+                  const a =
+                    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                    Math.cos((lat * Math.PI) / 180) *
+                      Math.cos((s.latitude * Math.PI) / 180) *
+                      Math.sin(dLon / 2) *
+                      Math.sin(dLon / 2);
+                  const dist = (
+                    R *
+                    2 *
+                    Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+                  ).toFixed(1);
+                  return { ...s, ...intel, dist };
                 })
                 .sort((a, b) => b.pct - a.pct)
             );
@@ -175,7 +208,7 @@ export default function App() {
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get("code")) {
       setIsSubscriber(true);
-      enforceSingleSession("verified_user@carttocash.pro");
+      enforceSingleSession("authorized_user@carttocash.pro");
     }
   }, []);
 
@@ -185,9 +218,10 @@ export default function App() {
         backgroundColor: "#020408",
         minHeight: "100vh",
         color: "#f8fafc",
-        fontFamily: "Inter, sans-serif",
+        fontFamily: "Inter, system-ui, sans-serif",
       }}
     >
+      {/* --- MAGIC LOADER --- */}
       <AnimatePresence>
         {isMagicLoading && (
           <motion.div
@@ -219,73 +253,68 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* --- HEADER --- */}
-      <nav
-        style={{
-          padding: "15px 20px",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          background: "rgba(2, 4, 8, 0.8)",
-          borderBottom: "1px solid #111827",
-          backdropFilter: "blur(10px)",
-          position: "sticky",
-          top: 0,
-          zIndex: 100,
-        }}
-      >
-        <div
-          onClick={() => setView("landing")}
+      {/* --- NAV --- */}
+      {view !== "landing" && (
+        <nav
           style={{
+            padding: "15px 20px",
             display: "flex",
+            justifyContent: "space-between",
             alignItems: "center",
-            gap: "8px",
-            cursor: "pointer",
+            background: "#020408",
+            borderBottom: "1px solid #111827",
+            position: "sticky",
+            top: 0,
+            zIndex: 100,
           }}
         >
           <div
+            onClick={() => setView("app")}
             style={{
-              background: "#22c55e",
-              padding: "5px",
-              borderRadius: "8px",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              cursor: "pointer",
             }}
           >
-            <Zap size={18} fill="black" />
-          </div>
-          <span style={{ fontSize: "18px", fontWeight: "1000" }}>
-            BATCH<span style={{ color: "#22c55e" }}>SIGNAL</span>
-          </span>
-        </div>
-        {!isSubscriber ? (
-          <button
-            onClick={handleWhopLogin}
-            style={{
-              background: "#22c55e",
-              color: "black",
-              border: "none",
-              padding: "8px 16px",
-              borderRadius: "10px",
-              fontSize: "11px",
-              fontWeight: "900",
-            }}
-          >
-            SIGN IN
-          </button>
-        ) : (
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <span
-              style={{ fontSize: "10px", fontWeight: "bold", color: "#22c55e" }}
+            <div
+              style={{
+                background: "#22c55e",
+                padding: "5px",
+                borderRadius: "8px",
+              }}
             >
-              ● LIVE FEED
+              <Zap size={18} fill="black" />
+            </div>
+            <span style={{ fontSize: "18px", fontWeight: "1000" }}>
+              BATCH<span style={{ color: "#22c55e" }}>SIGNAL</span>
             </span>
-            <LogOut
-              size={16}
-              color="#475569"
-              onClick={() => window.location.reload()}
-            />
           </div>
-        )}
-      </nav>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+              background: "#0f172a",
+              padding: "5px 12px",
+              borderRadius: "20px",
+              border: "1px solid #1e2937",
+            }}
+          >
+            <div
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: "#22c55e",
+              }}
+            />
+            <span style={{ fontSize: "9px", fontWeight: "900" }}>
+              NEURAL LINK ACTIVE
+            </span>
+          </div>
+        </nav>
+      )}
 
       {/* --- LANDING --- */}
       {view === "landing" && (
@@ -297,119 +326,135 @@ export default function App() {
             textAlign: "center",
           }}
         >
-          <div
-            style={{
-              background: "rgba(34, 197, 94, 0.1)",
-              color: "#22c55e",
-              padding: "6px 12px",
-              borderRadius: "20px",
-              fontSize: "10px",
-              fontWeight: "900",
-              marginBottom: "20px",
-              display: "inline-block",
-            }}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
           >
-            EARN $127+ MORE WEEKLY
-          </div>
-          <h1
-            style={{
-              fontSize: "48px",
-              fontWeight: "1000",
-              letterSpacing: "-2px",
-              marginBottom: "20px",
-            }}
-          >
-            Stop Guessing.
-            <br />
-            <span style={{ color: "#22c55e" }}>Start Winning.</span>
-          </h1>
-          {isSubscriber ? (
-            <button
-              onClick={startProScan}
-              style={{
-                background: "#22c55e",
-                color: "#000",
-                border: "none",
-                padding: "18px 40px",
-                borderRadius: "14px",
-                fontWeight: "1000",
-                fontSize: "16px",
-              }}
-            >
-              INITIALIZE RADAR
-            </button>
-          ) : (
             <div
               style={{
-                background: "#0f172a",
-                padding: "40px",
-                borderRadius: "32px",
-                border: "1px solid #1e2937",
-                maxWidth: "400px",
-                margin: "0 auto",
+                background: "rgba(34, 197, 94, 0.1)",
+                color: "#22c55e",
+                padding: "6px 12px",
+                borderRadius: "20px",
+                fontSize: "10px",
+                fontWeight: "900",
+                marginBottom: "20px",
+                display: "inline-block",
               }}
             >
-              <ShieldAlert
-                size={40}
-                color="#22c55e"
-                style={{ marginBottom: "15px", margin: "0 auto" }}
-              />
-              <h2 style={{ fontSize: "20px", fontWeight: "900" }}>
-                Members Only
-              </h2>
-              <p
-                style={{
-                  fontSize: "13px",
-                  color: "#94a3b8",
-                  marginBottom: "25px",
-                }}
-              >
-                Purchase "Cart-to-Cash Pro" to unlock the AI Radar.
-              </p>
-              <button
-                onClick={() => window.open(CHECKOUT_LINK)}
-                style={{
-                  width: "100%",
-                  padding: "15px",
-                  background: "#22c55e",
-                  border: "none",
-                  borderRadius: "12px",
-                  fontWeight: "1000",
-                }}
-              >
-                GET ACCESS
-              </button>
-              <button
-                onClick={handleWhopLogin}
-                style={{
-                  width: "100%",
-                  padding: "10px",
-                  background: "none",
-                  border: "1px solid #1e2937",
-                  color: "#94a3b8",
-                  borderRadius: "12px",
-                  fontWeight: "bold",
-                  fontSize: "12px",
-                  marginTop: "10px",
-                }}
-              >
-                ALREADY A MEMBER? SIGN IN
-              </button>
+              SAVE $127+ IN GAS & TIME WEEKLY
             </div>
-          )}
+            <h1
+              style={{
+                fontSize: "52px",
+                fontWeight: "1000",
+                letterSpacing: "-3px",
+                marginBottom: "20px",
+                lineHeight: "0.9",
+              }}
+            >
+              Master the <span style={{ color: "#22c55e" }}>Drop</span>.<br />
+              Maximize the Cash.
+            </h1>
+            {isSubscriber ? (
+              <button
+                onClick={startProScan}
+                style={{
+                  background: "#22c55e",
+                  color: "#000",
+                  border: "none",
+                  padding: "20px 50px",
+                  borderRadius: "14px",
+                  fontWeight: "1000",
+                  fontSize: "18px",
+                  cursor: "pointer",
+                  boxShadow: "0 0 30px rgba(34,197,94,0.2)",
+                }}
+              >
+                INITIALIZE RADAR
+              </button>
+            ) : (
+              <div
+                style={{
+                  background: "#0f172a",
+                  padding: "40px",
+                  borderRadius: "32px",
+                  border: "1px solid #1e2937",
+                  maxWidth: "450px",
+                  margin: "0 auto",
+                }}
+              >
+                <ShieldAlert
+                  size={48}
+                  color="#22c55e"
+                  style={{ margin: "0 auto 20px" }}
+                />
+                <h2
+                  style={{
+                    fontSize: "24px",
+                    fontWeight: "900",
+                    marginBottom: "10px",
+                  }}
+                >
+                  Exclusive Access
+                </h2>
+                <p
+                  style={{
+                    fontSize: "14px",
+                    color: "#94a3b8",
+                    marginBottom: "30px",
+                  }}
+                >
+                  Join Cart-to-Cash Pro to unlock the AI decision engine and
+                  real-time market mapping.
+                </p>
+                <button
+                  onClick={() => window.open(CHECKOUT_LINK)}
+                  style={{
+                    width: "100%",
+                    background: "#22c55e",
+                    color: "black",
+                    padding: "18px",
+                    borderRadius: "15px",
+                    fontWeight: "1000",
+                    cursor: "pointer",
+                    fontSize: "16px",
+                  }}
+                >
+                  UNLOCK PRO ACCESS
+                </button>
+                <button
+                  onClick={handleWhopLogin}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "#64748b",
+                    marginTop: "20px",
+                    fontWeight: "bold",
+                    fontSize: "12px",
+                    cursor: "pointer",
+                    textDecoration: "underline",
+                  }}
+                >
+                  Already a student? Sign in
+                </button>
+              </div>
+            )}
+          </motion.div>
         </div>
       )}
 
-      {/* --- MAIN APP DASHBOARD --- */}
-      {view === "app" && isSubscriber && (
+      {/* --- FEATURE 2: DASHBOARD --- */}
+      {view === "app" && (
         <div
           style={{
             maxWidth: "500px",
             margin: "0 auto",
             padding: "20px",
-            paddingBottom: "120px",
+            paddingBottom: "140px",
           }}
         >
+          {/* Weekly Progress Bar */}
           <div
             style={{
               background: "#0f172a",
@@ -433,9 +478,10 @@ export default function App() {
                     fontSize: "10px",
                     fontWeight: "900",
                     color: "#64748b",
+                    letterSpacing: "1px",
                   }}
                 >
-                  WEEKLY PERFORMANCE
+                  WEEKLY SCORE: <b>{weeklyScore}/100</b>
                 </p>
                 <p
                   style={{
@@ -445,10 +491,7 @@ export default function App() {
                     margin: 0,
                   }}
                 >
-                  {weeklyScore}
-                  <span style={{ fontSize: "14px", color: "#475569" }}>
-                    /100
-                  </span>
+                  ${weeklyEarnings.toFixed(2)}
                 </p>
               </div>
               <div style={{ textAlign: "right" }}>
@@ -459,7 +502,7 @@ export default function App() {
                     color: "#22c55e",
                   }}
                 >
-                  ${weeklyEarnings.toFixed(2)}
+                  PRO GRADE
                 </p>
                 <p
                   style={{
@@ -468,13 +511,13 @@ export default function App() {
                     color: "#475569",
                   }}
                 >
-                  GOAL: $800
+                  TARGET: $800
                 </p>
               </div>
             </div>
             <div
               style={{
-                height: "8px",
+                height: "10px",
                 background: "#020408",
                 borderRadius: "10px",
                 overflow: "hidden",
@@ -484,9 +527,19 @@ export default function App() {
                 initial={{ width: 0 }}
                 animate={{ width: `${(weeklyEarnings / 800) * 100}%` }}
                 transition={{ duration: 1.5 }}
-                style={{ height: "100%", background: "#22c55e" }}
+                style={{
+                  height: "100%",
+                  background: "#22c55e",
+                  boxShadow: "0 0 15px #22c55e",
+                }}
               />
             </div>
+            <p
+              style={{ marginTop: "15px", fontSize: "11px", color: "#94a3b8" }}
+            >
+              <TrendingUp size={12} style={{ display: "inline" }} /> At this
+              pace, you will hit your goal by <b>Saturday Afternoon</b>.
+            </p>
           </div>
 
           <div
@@ -546,6 +599,7 @@ export default function App() {
             </button>
           </div>
 
+          {/* --- RADAR (FEATURE 3) --- */}
           {activeTab === "radar" && (
             <div
               style={{ display: "flex", flexDirection: "column", gap: "10px" }}
@@ -573,7 +627,7 @@ export default function App() {
                         style={{
                           fontSize: "9px",
                           fontWeight: "900",
-                          color: s.pct > 80 ? "#22c55e" : "#fbbf24",
+                          color: s.color,
                           marginBottom: "8px",
                         }}
                       >
@@ -595,46 +649,41 @@ export default function App() {
                           marginTop: "4px",
                         }}
                       >
-                        {s.dist} miles away
+                        Peak demand starts in <b>15 minutes</b>.
                       </p>
+                      <div
+                        style={{
+                          marginTop: "12px",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "5px",
+                          color: "#22c55e",
+                          fontSize: "11px",
+                          fontWeight: "800",
+                        }}
+                      >
+                        <Navigation2 size={12} fill="#22c55e" /> {s.dist} miles
+                        away
+                      </div>
                     </div>
                     <div style={{ textAlign: "right" }}>
                       <div
                         style={{
                           fontSize: "38px",
                           fontWeight: "1000",
-                          color: s.pct > 80 ? "#22c55e" : "#fbbf24",
+                          color: s.color,
                         }}
                       >
                         {s.pct}%
                       </div>
                     </div>
                   </div>
-                  <button
-                    onClick={() =>
-                      window.open(
-                        `https://www.google.com/maps/dir/?api=1&destination=${s.latitude},${s.longitude}`
-                      )
-                    }
-                    style={{
-                      width: "100%",
-                      marginTop: "15px",
-                      background: "#1e293b",
-                      border: "1px solid #334155",
-                      color: "white",
-                      padding: "10px",
-                      borderRadius: "12px",
-                      fontSize: "11px",
-                      fontWeight: "900",
-                    }}
-                  >
-                    NAVIGATE
-                  </button>
                 </div>
               ))}
             </div>
           )}
 
+          {/* --- DECISION ENGINE (FEATURE 1) --- */}
           {activeTab === "engine" && (
             <div
               style={{
@@ -650,6 +699,7 @@ export default function App() {
                   padding: "25px",
                   borderRadius: "24px",
                   textAlign: "center",
+                  border: "1px solid #1e2937",
                   marginBottom: "25px",
                 }}
               >
@@ -666,17 +716,24 @@ export default function App() {
                     </div>
                     <p
                       style={{
-                        fontSize: "12px",
+                        fontSize: "13px",
                         color: "#f8fafc",
                         marginTop: "10px",
+                        fontWeight: "600",
                       }}
                     >
                       {getDecision().text}
                     </p>
                   </div>
                 ) : (
-                  <p style={{ color: "#475569" }}>
-                    Enter data for neural audit.
+                  <p
+                    style={{
+                      color: "#475569",
+                      fontSize: "14px",
+                      fontWeight: "700",
+                    }}
+                  >
+                    Awaiting neural analysis...
                   </p>
                 )}
               </div>
@@ -693,12 +750,12 @@ export default function App() {
                   onChange={(e) =>
                     setBatchForm({ ...batchForm, pay: e.target.value })
                   }
-                  placeholder="Pay $"
+                  placeholder="Batch Payout $"
                   style={{
                     background: "#030508",
                     border: "1px solid #1e2937",
                     padding: "15px",
-                    borderRadius: "14px",
+                    borderRadius: "15px",
                     color: "white",
                   }}
                 />
@@ -708,12 +765,12 @@ export default function App() {
                   onChange={(e) =>
                     setBatchForm({ ...batchForm, items: e.target.value })
                   }
-                  placeholder="Items"
+                  placeholder="Item Count"
                   style={{
                     background: "#030508",
                     border: "1px solid #1e2937",
                     padding: "15px",
-                    borderRadius: "14px",
+                    borderRadius: "15px",
                     color: "white",
                   }}
                 />
@@ -723,12 +780,12 @@ export default function App() {
                   onChange={(e) =>
                     setBatchForm({ ...batchForm, miles: e.target.value })
                   }
-                  placeholder="Miles"
+                  placeholder="Total Miles"
                   style={{
                     background: "#030508",
                     border: "1px solid #1e2937",
                     padding: "15px",
-                    borderRadius: "14px",
+                    borderRadius: "15px",
                     color: "white",
                   }}
                 />
@@ -737,7 +794,6 @@ export default function App() {
                     setWeeklyEarnings(
                       (prev) => prev + parseFloat(batchForm.pay)
                     );
-                    alert("Earnings Synced!");
                     setActiveTab("radar");
                   }}
                   style={{
@@ -748,14 +804,16 @@ export default function App() {
                     borderRadius: "16px",
                     fontWeight: "1000",
                     marginTop: "10px",
+                    cursor: "pointer",
                   }}
                 >
-                  SYNC TO WEEKLY GOAL
+                  SYNC COMPLETED BATCH
                 </button>
               </div>
             </div>
           )}
 
+          {/* --- SHIFT PLANNER (FEATURE 5) --- */}
           {activeTab === "planner" && (
             <div
               style={{
@@ -775,8 +833,59 @@ export default function App() {
                   gap: "10px",
                 }}
               >
-                <Calendar color="#22c55e" /> Strategy Guide
+                <Calendar color="#22c55e" /> Strategy Block
               </h2>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: "10px",
+                  marginBottom: "20px",
+                }}
+              >
+                <div
+                  style={{
+                    background: "#020408",
+                    padding: "15px",
+                    borderRadius: "20px",
+                    textAlign: "center",
+                  }}
+                >
+                  <p
+                    style={{
+                      fontSize: "9px",
+                      color: "#475569",
+                      fontWeight: "900",
+                    }}
+                  >
+                    START
+                  </p>
+                  <p style={{ fontSize: "14px", fontWeight: "1000" }}>
+                    7:45 AM
+                  </p>
+                </div>
+                <div
+                  style={{
+                    background: "#020408",
+                    padding: "15px",
+                    borderRadius: "20px",
+                    textAlign: "center",
+                  }}
+                >
+                  <p
+                    style={{
+                      fontSize: "9px",
+                      color: "#475569",
+                      fontWeight: "900",
+                    }}
+                  >
+                    END
+                  </p>
+                  <p style={{ fontSize: "14px", fontWeight: "1000" }}>
+                    11:30 AM
+                  </p>
+                </div>
+              </div>
               <div
                 style={{
                   background: "rgba(34, 197, 94, 0.1)",
@@ -790,11 +899,12 @@ export default function App() {
                     fontSize: "13px",
                     color: "white",
                     fontWeight: "600",
+                    margin: 0,
                   }}
                 >
-                  "Today: Target the 8:00 AM - 11:30 AM window. Position near
-                  high-volume grocery hubs. Avoid pharmacy small-batches unless
-                  pay exceeds $18."
+                  "Today your goal is <b>4 batches</b> at a <b>$28 average</b>.
+                  Position near the <b>DeCicco & Sons</b> plaza for the 8:00 AM
+                  drop. Skip any pharmacy orders under $15."
                 </p>
               </div>
             </div>
@@ -802,7 +912,65 @@ export default function App() {
         </div>
       )}
 
-      {/* FOOTER */}
+      {/* --- COMMUNITY WINS FEED (FEATURE 7) --- */}
+      {view === "app" && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: "60px",
+            left: 0,
+            right: 0,
+            height: "40px",
+            background: "#111827",
+            display: "flex",
+            alignItems: "center",
+            overflow: "hidden",
+            borderTop: "1px solid #1e2937",
+          }}
+        >
+          <motion.div
+            animate={{ x: [0, -1000] }}
+            transition={{ repeat: Infinity, duration: 30, ease: "linear" }}
+            style={{
+              display: "flex",
+              gap: "50px",
+              whiteSpace: "nowrap",
+              padding: "0 20px",
+            }}
+          >
+            {["Carlos J.", "Maria R.", "Sarah K.", "David W."].map(
+              (name, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    fontSize: "11px",
+                    fontWeight: "900",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: "50%",
+                      background: "#22c55e",
+                    }}
+                  />
+                  <span style={{ color: "#94a3b8" }}>{name}</span>
+                  <span style={{ color: "#22c55e" }}>
+                    +${(Math.random() * 40 + 20).toFixed(2)}
+                  </span>
+                  <span style={{ color: "#475569" }}>[BATCH COMPLETED]</span>
+                </div>
+              )
+            )}
+          </motion.div>
+        </div>
+      )}
+
+      {/* --- FOOTER & LEGAL --- */}
       <footer
         style={{
           position: "fixed",
@@ -819,10 +987,77 @@ export default function App() {
           zIndex: 100,
         }}
       >
-        <p style={{ fontSize: "9px", fontWeight: "900", color: "#334155" }}>
-          © 2026 BATCHSIGNAL AI • PROFESSIONAL INTELLIGENCE
-        </p>
+        <button
+          onClick={() => setShowLegal(true)}
+          style={{
+            background: "none",
+            border: "none",
+            color: "#475569",
+            fontSize: "9px",
+            fontWeight: "900",
+            textDecoration: "underline",
+            cursor: "pointer",
+          }}
+        >
+          TERMS & LEGAL
+        </button>
       </footer>
+
+      {showLegal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.9)",
+            zIndex: 200,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px",
+          }}
+        >
+          <div
+            style={{
+              background: "#0f172a",
+              padding: "30px",
+              borderRadius: "30px",
+              maxWidth: "400px",
+              border: "1px solid #1e2937",
+            }}
+          >
+            <h2
+              style={{
+                fontSize: "18px",
+                fontWeight: "900",
+                color: "#22c55e",
+                marginBottom: "10px",
+              }}
+            >
+              Legal
+            </h2>
+            <p style={{ fontSize: "12px", color: "#94a3b8" }}>
+              BatchSignal AI is an independent tool not affiliated with
+              Instacart. Data is predictive and not guaranteed income. Use while
+              parked only.
+            </p>
+            <button
+              onClick={() => setShowLegal(false)}
+              style={{
+                width: "100%",
+                marginTop: "20px",
+                background: "#22c55e",
+                color: "black",
+                border: "none",
+                padding: "12px",
+                borderRadius: "15px",
+                fontWeight: "900",
+              }}
+            >
+              CLOSE
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
