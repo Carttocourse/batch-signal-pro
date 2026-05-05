@@ -23,20 +23,21 @@ import {
   Cpu,
   LogOut,
   ShieldCheck,
+  Info,
+  BarChart4,
+  Lightbulb,
+  Users,
   Calendar,
   Target,
   TrendingDown,
   Timer,
-  Users,
-  Lightbulb,
 } from "lucide-react";
 
-// --- DATABASE CONFIG ---
+// --- CONFIG ---
 const SUPABASE_URL = "https://glprsxjtsqzpjintupls.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_D03Pur4oIlyp2UJiNpdwYg_GYDWs_3o";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// --- WHOP CONFIG ---
 const WHOP_CLIENT_ID = "app_S2qd4ooY1zM2nz";
 const WHOP_API_KEY =
   "apik_Le7CeVbCgB9Y0_C4845077_C_cf0e1bec2c7b1096b6aa62503637fcdf2b184f591b157f52492a7173486a8a";
@@ -56,100 +57,126 @@ export default function App() {
   const [magicText, setMagicText] = useState("");
   const [showLegal, setShowLegal] = useState(false);
 
-  // Feature 2 & 4: Performance State
   const [weeklyEarnings, setWeeklyEarnings] = useState(542.5);
   const [weeklyScore, setWeeklyScore] = useState(84);
   const [batchCount, setBatchCount] = useState(12);
-
-  // Feature 1: Decision Engine State
   const [batchForm, setBatchForm] = useState({
     pay: "",
     items: "",
     miles: "",
+    hours: "",
+    minutes: "",
     storeId: "",
   });
+  const [mySessionId] = useState(Math.random().toString(36).substring(7));
 
-  const magicPhases = [
-    "Authenticating Neural Link...",
-    "Querying Satellite Nodes...",
-    "Parsing Market Volatility...",
-    "Optimizing Batch Clusters...",
-  ];
+  // --- 1. ANTI-ABUSE & RATING LOGIC ---
+  const getBatchRating = () => {
+    const { pay, items, hours, minutes, miles } = batchForm;
+    const totalMins = (parseInt(hours) || 0) * 60 + (parseInt(minutes) || 0);
+    if (!pay || !items || totalMins === 0) return null;
 
-  // --- 1. WHOP AUTH & SESSION LOCK ---
+    const hourly = (parseFloat(pay) / totalMins) * 60;
+    const hourlyTarget = 30.0;
+
+    // Anti-Abuse Check: Flag if numbers are physically impossible
+    const isSuspicious =
+      hourly > 200 ||
+      parseFloat(pay) / parseInt(items) > 20 ||
+      totalMins / parseInt(items) < 0.1;
+    if (isSuspicious)
+      return {
+        type: "ERROR",
+        color: "#f87171",
+        text: "UNREALISTIC DATA: Neural net rejected this entry. Check your numbers.",
+      };
+
+    const diff = Math.abs(hourlyTarget - hourly);
+    if (hourly >= hourlyTarget) {
+      return {
+        type: "ACCEPT",
+        color: "#22c55e",
+        score: Math.min(Math.round((hourly / hourlyTarget) * 70), 100),
+        text: `PROFITABLE. +$${diff.toFixed(2)}/hr above target.`,
+      };
+    } else {
+      return {
+        type: "SKIP",
+        color: "#ef4444",
+        score: Math.round((hourly / hourlyTarget) * 70),
+        text: `LOSS: -$${diff.toFixed(2)}/hr. Below your target.`,
+      };
+    }
+  };
+
+  // --- 2. WHOP AUTH & SESSION LOCK ---
   const handleWhopLogin = () => {
-    const origin = window.location.origin;
-    const cleanUrl = origin.endsWith("/") ? origin : origin + "/";
+    const cleanUrl = window.location.origin + "/";
     window.location.href = `https://whop.com/oauth?client_id=${WHOP_CLIENT_ID}&redirect_uri=${encodeURIComponent(
       cleanUrl
     )}&response_type=code&scope=identify`;
   };
 
   const enforceSingleSession = async (email) => {
-    const myId = Math.random().toString(36).substring(7);
     await supabase
       .from("profiles")
-      .upsert({ email: email, last_session_id: myId }, { onConflict: "email" });
+      .upsert(
+        { email: email, last_session_id: mySessionId },
+        { onConflict: "email" }
+      );
     const interval = setInterval(async () => {
       const { data } = await supabase
         .from("profiles")
         .select("last_session_id")
         .eq("email", email)
         .single();
-      if (data && data.last_session_id !== myId) {
-        alert("Session conflict: Logged in on another device.");
+      if (data && data.last_session_id !== mySessionId) {
+        alert("Session Expired: Logged in on another device.");
         window.location.href = window.location.origin;
       }
-    }, 20000);
+    }, 15000);
   };
 
-  // --- 2. BATCH DECISION ENGINE (FEATURE 1) ---
-  const getDecision = () => {
-    const { pay, items, miles } = batchForm;
-    if (!pay || !items || !miles) return null;
-    const hourlyTarget = 30.0;
-    const estMins = parseInt(items) + 12 + parseFloat(miles) * 2.5; // Incl. driving
-    const estHourly = (parseFloat(pay) / estMins) * 60;
-    const diff = Math.abs(hourlyTarget - estHourly);
-
-    if (estHourly >= hourlyTarget) {
-      return {
-        type: "ACCEPT",
-        color: "#22c55e",
-        text: `STRATEGIC MATCH. +$${diff.toFixed(2)}/hr above target.`,
-      };
-    } else {
-      return {
-        type: "SKIP",
-        color: "#ef4444",
-        text: `LOSS DETECTED: -$${diff.toFixed(
-          2
-        )}/hr. A better batch is coming.`,
-      };
-    }
-  };
-
-  // --- 3. NEURAL RADAR ENGINE (FEATURE 3) ---
+  // --- 3. INTELLIGENCE ENGINE (FIXED CLOSED-STORE LOGIC) ---
   const calculateIntel = (store) => {
     const hr = new Date().getHours();
-    const day = new Date().getDay();
-    const isOpen =
-      hr >= (store.open_hour || 8) && hr < (store.close_hour || 21);
-    if (!isOpen) return { pct: 0, color: "#1e293b", label: "OFFLINE" };
+    const open = store.open_hour || 8;
+    const close = store.close_hour || 21;
+
+    // Strict logic: If store is closed, it's 0% and OFFLINE
+    const isOpen = hr >= open && hr < close;
+    if (!isOpen)
+      return {
+        pct: 0,
+        color: "#1e293b",
+        label: "OFFLINE",
+        subtext: `Opens at ${open}:00 AM`,
+      };
 
     let score = store.brand_quality || 60;
-    if (hr >= 7 && hr <= 10) score += 20; // Morning Drop
-    if (hr >= 16 && hr <= 19) score += 15; // Evening Rush
-    if (day === 0) score += 15; // Sunday
+    if (hr >= 7 && hr <= 10) score += 20;
 
-    const final = Math.min(Math.round(score), 99);
-    const color = final > 85 ? "#22c55e" : final > 60 ? "#fbbf24" : "#f97316";
-    return { pct: final, color, label: final > 85 ? "CRITICAL" : "ACTIVE" };
+    // Imminent Peak Logic
+    let subtext = "Active Drop Window";
+    if (hr === open) subtext = "MORNING DROP ACTIVE";
+    if (hr === close - 1) subtext = "FINAL DAILY SPIKE";
+
+    return {
+      pct: Math.min(score, 99),
+      color: score > 85 ? "#22c55e" : "#fbbf24",
+      label: score > 85 ? "CRITICAL" : "ACTIVE",
+      subtext,
+    };
   };
 
   const startProScan = async () => {
     setIsMagicLoading(true);
-    magicPhases.forEach((t, i) => setTimeout(() => setMagicText(t), i * 900));
+    const phases = [
+      "Syncing Satellite...",
+      "Parsing Market Drops...",
+      "Calculating Trends...",
+    ];
+    phases.forEach((t, i) => setTimeout(() => setMagicText(t), i * 900));
 
     navigator.geolocation.getCurrentPosition(
       async (p) => {
@@ -175,18 +202,32 @@ export default function App() {
                 .map((s) => {
                   const intel = calculateIntel(s);
                   const R = 3958.8;
-                  const dLat = ((s.latitude - lat) * Math.PI) / 180;
-                  const dLon = ((s.longitude - lng) * Math.PI) / 180;
-                  const a =
-                    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                    Math.cos((lat * Math.PI) / 180) *
-                      Math.cos((s.latitude * Math.PI) / 180) *
-                      Math.sin(dLon / 2) *
-                      Math.sin(dLon / 2);
                   const dist = (
                     R *
                     2 *
-                    Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+                    Math.atan2(
+                      Math.sqrt(
+                        Math.sin(((s.latitude - lat) * Math.PI) / 180 / 2) **
+                          2 +
+                          Math.cos((lat * Math.PI) / 180) *
+                            Math.cos((s.latitude * Math.PI) / 180) *
+                            Math.sin(
+                              ((s.longitude - lng) * Math.PI) / 180 / 2
+                            ) **
+                              2
+                      ),
+                      Math.sqrt(
+                        1 -
+                          (Math.sin(((s.latitude - lat) * Math.PI) / 180 / 2) **
+                            2 +
+                            Math.cos((lat * Math.PI) / 180) *
+                              Math.cos((s.latitude * Math.PI) / 180) *
+                              Math.sin(
+                                ((s.longitude - lng) * Math.PI) / 180 / 2
+                              ) **
+                                2)
+                      )
+                    )
                   ).toFixed(1);
                   return { ...s, ...intel, dist };
                 })
@@ -218,10 +259,9 @@ export default function App() {
         backgroundColor: "#020408",
         minHeight: "100vh",
         color: "#f8fafc",
-        fontFamily: "Inter, system-ui, sans-serif",
+        fontFamily: "Inter, sans-serif",
       }}
     >
-      {/* --- MAGIC LOADER --- */}
       <AnimatePresence>
         {isMagicLoading && (
           <motion.div
@@ -253,7 +293,7 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* --- NAV --- */}
+      {/* --- HEADER --- */}
       {view !== "landing" && (
         <nav
           style={{
@@ -310,7 +350,7 @@ export default function App() {
               }}
             />
             <span style={{ fontSize: "9px", fontWeight: "900" }}>
-              NEURAL LINK ACTIVE
+              {status.toUpperCase()}
             </span>
           </div>
         </nav>
@@ -330,31 +370,17 @@ export default function App() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
           >
-            <div
-              style={{
-                background: "rgba(34, 197, 94, 0.1)",
-                color: "#22c55e",
-                padding: "6px 12px",
-                borderRadius: "20px",
-                fontSize: "10px",
-                fontWeight: "900",
-                marginBottom: "20px",
-                display: "inline-block",
-              }}
-            >
-              SAVE $127+ IN GAS & TIME WEEKLY
-            </div>
             <h1
               style={{
                 fontSize: "52px",
                 fontWeight: "1000",
                 letterSpacing: "-3px",
                 marginBottom: "20px",
-                lineHeight: "0.9",
               }}
             >
-              Master the <span style={{ color: "#22c55e" }}>Drop</span>.<br />
-              Maximize the Cash.
+              Stop Guessing.
+              <br />
+              <span style={{ color: "#22c55e" }}>Start Winning.</span>
             </h1>
             {isSubscriber ? (
               <button
@@ -368,7 +394,6 @@ export default function App() {
                   fontWeight: "1000",
                   fontSize: "18px",
                   cursor: "pointer",
-                  boxShadow: "0 0 30px rgba(34,197,94,0.2)",
                 }}
               >
                 INITIALIZE RADAR
@@ -396,18 +421,8 @@ export default function App() {
                     marginBottom: "10px",
                   }}
                 >
-                  Exclusive Access
+                  PRO Access Required
                 </h2>
-                <p
-                  style={{
-                    fontSize: "14px",
-                    color: "#94a3b8",
-                    marginBottom: "30px",
-                  }}
-                >
-                  Join Cart-to-Cash Pro to unlock the AI decision engine and
-                  real-time market mapping.
-                </p>
                 <button
                   onClick={() => window.open(CHECKOUT_LINK)}
                   style={{
@@ -418,10 +433,9 @@ export default function App() {
                     borderRadius: "15px",
                     fontWeight: "1000",
                     cursor: "pointer",
-                    fontSize: "16px",
                   }}
                 >
-                  UNLOCK PRO ACCESS
+                  GET ACCESS
                 </button>
                 <button
                   onClick={handleWhopLogin}
@@ -436,7 +450,7 @@ export default function App() {
                     textDecoration: "underline",
                   }}
                 >
-                  Already a student? Sign in
+                  Already a member? Sign in
                 </button>
               </div>
             )}
@@ -444,7 +458,7 @@ export default function App() {
         </div>
       )}
 
-      {/* --- FEATURE 2: DASHBOARD --- */}
+      {/* --- MAIN DASHBOARD --- */}
       {view === "app" && (
         <div
           style={{
@@ -454,7 +468,6 @@ export default function App() {
             paddingBottom: "140px",
           }}
         >
-          {/* Weekly Progress Bar */}
           <div
             style={{
               background: "#0f172a",
@@ -478,10 +491,9 @@ export default function App() {
                     fontSize: "10px",
                     fontWeight: "900",
                     color: "#64748b",
-                    letterSpacing: "1px",
                   }}
                 >
-                  WEEKLY SCORE: <b>{weeklyScore}/100</b>
+                  WEEKLY SCORE
                 </p>
                 <p
                   style={{
@@ -491,7 +503,10 @@ export default function App() {
                     margin: 0,
                   }}
                 >
-                  ${weeklyEarnings.toFixed(2)}
+                  {weeklyScore}
+                  <span style={{ fontSize: "14px", color: "#475569" }}>
+                    /100
+                  </span>
                 </p>
               </div>
               <div style={{ textAlign: "right" }}>
@@ -502,7 +517,7 @@ export default function App() {
                     color: "#22c55e",
                   }}
                 >
-                  PRO GRADE
+                  ${weeklyEarnings.toFixed(2)}
                 </p>
                 <p
                   style={{
@@ -511,13 +526,13 @@ export default function App() {
                     color: "#475569",
                   }}
                 >
-                  TARGET: $800
+                  GOAL: $800
                 </p>
               </div>
             </div>
             <div
               style={{
-                height: "10px",
+                height: "8px",
                 background: "#020408",
                 borderRadius: "10px",
                 overflow: "hidden",
@@ -527,19 +542,9 @@ export default function App() {
                 initial={{ width: 0 }}
                 animate={{ width: `${(weeklyEarnings / 800) * 100}%` }}
                 transition={{ duration: 1.5 }}
-                style={{
-                  height: "100%",
-                  background: "#22c55e",
-                  boxShadow: "0 0 15px #22c55e",
-                }}
+                style={{ height: "100%", background: "#22c55e" }}
               />
             </div>
-            <p
-              style={{ marginTop: "15px", fontSize: "11px", color: "#94a3b8" }}
-            >
-              <TrendingUp size={12} style={{ display: "inline" }} /> At this
-              pace, you will hit your goal by <b>Saturday Afternoon</b>.
-            </p>
           </div>
 
           <div
@@ -565,44 +570,29 @@ export default function App() {
                 fontSize: "10px",
               }}
             >
-              RADAR
+              NEURAL RADAR
             </button>
             <button
-              onClick={() => setActiveTab("engine")}
+              onClick={() => setActiveTab("rater")}
               style={{
                 flex: 1,
                 padding: "12px",
                 borderRadius: "14px",
                 border: "none",
-                background: activeTab === "engine" ? "#1e293b" : "transparent",
-                color: activeTab === "engine" ? "#22c55e" : "#475569",
+                background: activeTab === "rater" ? "#1e293b" : "transparent",
+                color: activeTab === "rater" ? "#22c55e" : "#475569",
                 fontWeight: "900",
                 fontSize: "10px",
               }}
             >
-              ENGINE
-            </button>
-            <button
-              onClick={() => setActiveTab("planner")}
-              style={{
-                flex: 1,
-                padding: "12px",
-                borderRadius: "14px",
-                border: "none",
-                background: activeTab === "planner" ? "#1e293b" : "transparent",
-                color: activeTab === "planner" ? "#22c55e" : "#475569",
-                fontWeight: "900",
-                fontSize: "10px",
-              }}
-            >
-              PLANNER
+              BATCH RATER
             </button>
           </div>
 
-          {/* --- RADAR (FEATURE 3) --- */}
+          {/* --- RADAR (INTEGRATED TRENDS) --- */}
           {activeTab === "radar" && (
             <div
-              style={{ display: "flex", flexDirection: "column", gap: "10px" }}
+              style={{ display: "flex", flexDirection: "column", gap: "12px" }}
             >
               {stores.map((s) => (
                 <div
@@ -646,24 +636,42 @@ export default function App() {
                         style={{
                           fontSize: "11px",
                           color: "#64748b",
-                          marginTop: "4px",
+                          marginTop: "6px",
                         }}
                       >
-                        Peak demand starts in <b>15 minutes</b>.
+                        {s.subtext}
                       </p>
+
+                      {/* TYPICAL TRENDS INTEGRATION */}
                       <div
                         style={{
-                          marginTop: "12px",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "5px",
-                          color: "#22c55e",
-                          fontSize: "11px",
-                          fontWeight: "800",
+                          marginTop: "15px",
+                          padding: "10px",
+                          background: "#020408",
+                          borderRadius: "12px",
+                          border: "1px solid #111827",
                         }}
                       >
-                        <Navigation2 size={12} fill="#22c55e" /> {s.dist} miles
-                        away
+                        <p
+                          style={{
+                            fontSize: "9px",
+                            fontWeight: "900",
+                            color: "#475569",
+                            textTransform: "uppercase",
+                            marginBottom: "4px",
+                          }}
+                        >
+                          Typical Peak Behavior
+                        </p>
+                        <p
+                          style={{
+                            fontSize: "11px",
+                            color: "#94a3b8",
+                            margin: 0,
+                          }}
+                        >
+                          {s.typical_peak_hours || "Peak patterns sync in 24h"}
+                        </p>
                       </div>
                     </div>
                     <div style={{ textAlign: "right" }}>
@@ -683,8 +691,8 @@ export default function App() {
             </div>
           )}
 
-          {/* --- DECISION ENGINE (FEATURE 1) --- */}
-          {activeTab === "engine" && (
+          {/* --- BATCH RATER (ANTI-ABUSE) --- */}
+          {activeTab === "rater" && (
             <div
               style={{
                 background: "#0f172a",
@@ -699,41 +707,35 @@ export default function App() {
                   padding: "25px",
                   borderRadius: "24px",
                   textAlign: "center",
-                  border: "1px solid #1e2937",
                   marginBottom: "25px",
+                  border: "1px solid #1e2937",
                 }}
               >
-                {getDecision() ? (
+                {getBatchRating() ? (
                   <div>
                     <div
                       style={{
                         fontSize: "42px",
                         fontWeight: "1000",
-                        color: getDecision().color,
+                        color: getBatchRating().color,
                       }}
                     >
-                      {getDecision().type}
+                      {getBatchRating().type}
                     </div>
                     <p
                       style={{
                         fontSize: "13px",
-                        color: "#f8fafc",
+                        color: "white",
                         marginTop: "10px",
                         fontWeight: "600",
                       }}
                     >
-                      {getDecision().text}
+                      {getBatchRating().text}
                     </p>
                   </div>
                 ) : (
-                  <p
-                    style={{
-                      color: "#475569",
-                      fontSize: "14px",
-                      fontWeight: "700",
-                    }}
-                  >
-                    Awaiting neural analysis...
+                  <p style={{ color: "#475569", fontSize: "14px" }}>
+                    Input batch for neural audit.
                   </p>
                 )}
               </div>
@@ -744,36 +746,82 @@ export default function App() {
                   gap: "12px",
                 }}
               >
-                <input
-                  type="number"
-                  value={batchForm.pay}
-                  onChange={(e) =>
-                    setBatchForm({ ...batchForm, pay: e.target.value })
-                  }
-                  placeholder="Batch Payout $"
+                <div
                   style={{
-                    background: "#030508",
-                    border: "1px solid #1e2937",
-                    padding: "15px",
-                    borderRadius: "15px",
-                    color: "white",
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: "10px",
                   }}
-                />
-                <input
-                  type="number"
-                  value={batchForm.items}
-                  onChange={(e) =>
-                    setBatchForm({ ...batchForm, items: e.target.value })
-                  }
-                  placeholder="Item Count"
+                >
+                  <input
+                    type="number"
+                    value={batchForm.pay}
+                    onChange={(e) =>
+                      setBatchForm({ ...batchForm, pay: e.target.value })
+                    }
+                    placeholder="Pay $"
+                    style={{
+                      background: "#030508",
+                      border: "1px solid #1e2937",
+                      padding: "15px",
+                      borderRadius: "15px",
+                      color: "white",
+                    }}
+                  />
+                  <input
+                    type="number"
+                    value={batchForm.items}
+                    onChange={(e) =>
+                      setBatchForm({ ...batchForm, items: e.target.value })
+                    }
+                    placeholder="Items"
+                    style={{
+                      background: "#030508",
+                      border: "1px solid #1e2937",
+                      padding: "15px",
+                      borderRadius: "15px",
+                      color: "white",
+                    }}
+                  />
+                </div>
+                <div
                   style={{
-                    background: "#030508",
-                    border: "1px solid #1e2937",
-                    padding: "15px",
-                    borderRadius: "15px",
-                    color: "white",
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: "10px",
                   }}
-                />
+                >
+                  <input
+                    type="number"
+                    value={batchForm.hours}
+                    onChange={(e) =>
+                      setBatchForm({ ...batchForm, hours: e.target.value })
+                    }
+                    placeholder="Hrs"
+                    style={{
+                      background: "#030508",
+                      border: "1px solid #1e2937",
+                      padding: "15px",
+                      borderRadius: "15px",
+                      color: "white",
+                    }}
+                  />
+                  <input
+                    type="number"
+                    value={batchForm.minutes}
+                    onChange={(e) =>
+                      setBatchForm({ ...batchForm, minutes: e.target.value })
+                    }
+                    placeholder="Mins"
+                    style={{
+                      background: "#030508",
+                      border: "1px solid #1e2937",
+                      padding: "15px",
+                      borderRadius: "15px",
+                      color: "white",
+                    }}
+                  />
+                </div>
                 <input
                   type="number"
                   value={batchForm.miles}
@@ -789,18 +837,23 @@ export default function App() {
                     color: "white",
                   }}
                 />
+
                 <button
                   onClick={() => {
+                    const r = getBatchRating();
+                    if (r.type === "ERROR")
+                      return alert("Entry blocked: Unrealistic data.");
                     setWeeklyEarnings(
                       (prev) => prev + parseFloat(batchForm.pay)
                     );
+                    alert("Neural Net Updated.");
                     setActiveTab("radar");
                   }}
                   style={{
                     background: "#22c55e",
                     color: "black",
                     border: "none",
-                    padding: "16px",
+                    padding: "18px",
                     borderRadius: "16px",
                     fontWeight: "1000",
                     marginTop: "10px",
@@ -812,161 +865,6 @@ export default function App() {
               </div>
             </div>
           )}
-
-          {/* --- SHIFT PLANNER (FEATURE 5) --- */}
-          {activeTab === "planner" && (
-            <div
-              style={{
-                background: "#0f172a",
-                padding: "25px",
-                borderRadius: "32px",
-                border: "1px solid #1e2937",
-              }}
-            >
-              <h2
-                style={{
-                  fontSize: "20px",
-                  fontWeight: "900",
-                  marginBottom: "15px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "10px",
-                }}
-              >
-                <Calendar color="#22c55e" /> Strategy Block
-              </h2>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: "10px",
-                  marginBottom: "20px",
-                }}
-              >
-                <div
-                  style={{
-                    background: "#020408",
-                    padding: "15px",
-                    borderRadius: "20px",
-                    textAlign: "center",
-                  }}
-                >
-                  <p
-                    style={{
-                      fontSize: "9px",
-                      color: "#475569",
-                      fontWeight: "900",
-                    }}
-                  >
-                    START
-                  </p>
-                  <p style={{ fontSize: "14px", fontWeight: "1000" }}>
-                    7:45 AM
-                  </p>
-                </div>
-                <div
-                  style={{
-                    background: "#020408",
-                    padding: "15px",
-                    borderRadius: "20px",
-                    textAlign: "center",
-                  }}
-                >
-                  <p
-                    style={{
-                      fontSize: "9px",
-                      color: "#475569",
-                      fontWeight: "900",
-                    }}
-                  >
-                    END
-                  </p>
-                  <p style={{ fontSize: "14px", fontWeight: "1000" }}>
-                    11:30 AM
-                  </p>
-                </div>
-              </div>
-              <div
-                style={{
-                  background: "rgba(34, 197, 94, 0.1)",
-                  padding: "15px",
-                  borderRadius: "20px",
-                  border: "1px solid rgba(34, 197, 94, 0.2)",
-                }}
-              >
-                <p
-                  style={{
-                    fontSize: "13px",
-                    color: "white",
-                    fontWeight: "600",
-                    margin: 0,
-                  }}
-                >
-                  "Today your goal is <b>4 batches</b> at a <b>$28 average</b>.
-                  Position near the <b>DeCicco & Sons</b> plaza for the 8:00 AM
-                  drop. Skip any pharmacy orders under $15."
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* --- COMMUNITY WINS FEED (FEATURE 7) --- */}
-      {view === "app" && (
-        <div
-          style={{
-            position: "fixed",
-            bottom: "60px",
-            left: 0,
-            right: 0,
-            height: "40px",
-            background: "#111827",
-            display: "flex",
-            alignItems: "center",
-            overflow: "hidden",
-            borderTop: "1px solid #1e2937",
-          }}
-        >
-          <motion.div
-            animate={{ x: [0, -1000] }}
-            transition={{ repeat: Infinity, duration: 30, ease: "linear" }}
-            style={{
-              display: "flex",
-              gap: "50px",
-              whiteSpace: "nowrap",
-              padding: "0 20px",
-            }}
-          >
-            {["Carlos J.", "Maria R.", "Sarah K.", "David W."].map(
-              (name, i) => (
-                <div
-                  key={i}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    fontSize: "11px",
-                    fontWeight: "900",
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: "50%",
-                      background: "#22c55e",
-                    }}
-                  />
-                  <span style={{ color: "#94a3b8" }}>{name}</span>
-                  <span style={{ color: "#22c55e" }}>
-                    +${(Math.random() * 40 + 20).toFixed(2)}
-                  </span>
-                  <span style={{ color: "#475569" }}>[BATCH COMPLETED]</span>
-                </div>
-              )
-            )}
-          </motion.div>
         </div>
       )}
 
@@ -1036,9 +934,8 @@ export default function App() {
               Legal
             </h2>
             <p style={{ fontSize: "12px", color: "#94a3b8" }}>
-              BatchSignal AI is an independent tool not affiliated with
-              Instacart. Data is predictive and not guaranteed income. Use while
-              parked only.
+              Predictive tool. Not affiliated with Instacart. Payouts estimates
+              are algorithmic and not guaranteed income.
             </p>
             <button
               onClick={() => setShowLegal(false)}
