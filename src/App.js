@@ -27,9 +27,11 @@ import {
   BarChart4,
   Lightbulb,
   Trash2,
-  Edit3,
-  ArrowRight,
+  Calendar,
+  Target,
+  Timer,
 } from "lucide-react";
+import Tesseract from "tesseract.js";
 
 // --- CONFIG ---
 const SUPABASE_URL = "https://glprsxjtsqzpjintupls.supabase.co";
@@ -43,7 +45,7 @@ const BLOCKED_STORES = ["daido", "harrison", "whole foods", "diado"];
 export default function App() {
   const [view, setView] = useState("landing");
   const [activeTab, setActiveTab] = useState("radar");
-  const [raterMode, setRaterMode] = useState("pre"); // 'pre' or 'post'
+  const [raterMode, setRaterMode] = useState("pre");
   const [isSubscriber, setIsSubscriber] = useState(false);
   const [stores, setStores] = useState([]);
   const [userLoc, setUserLoc] = useState(null);
@@ -61,8 +63,9 @@ export default function App() {
     storeName: "",
   });
   const [mySessionId] = useState(Math.random().toString(36).substring(7));
+  const [showLegal, setShowLegal] = useState(false);
 
-  // --- 1. MONDAY RESET LOGIC ---
+  // --- 1. MONDAY RESET & STATS LOGIC ---
   useEffect(() => {
     const lastReset = localStorage.getItem("last_monday_reset");
     const now = new Date();
@@ -77,47 +80,65 @@ export default function App() {
   }, []);
 
   const weeklyEarnings = weeklyBatches.reduce(
-    (sum, b) => sum + parseFloat(b.payout),
+    (sum, b) => sum + parseFloat(b.payout || 0),
     0
   );
+  const totalMinsWorked = weeklyBatches.reduce(
+    (sum, b) => sum + (parseInt(b.duration_mins) || 0),
+    0
+  );
+  const avgHourly =
+    totalMinsWorked > 0
+      ? Math.round((weeklyEarnings / totalMinsWorked) * 60)
+      : 0;
 
-  // --- 2. THE A-F GRADING ENGINE (PRE-ACCEPTANCE) ---
+  // --- 2. THE STRATEGY ENGINE (INTEGRATED PLANNER) ---
+  const getShiftStrategy = () => {
+    const day = new Date().getDay();
+    return {
+      window: day === 0 ? "6:45 AM - 1:00 PM" : "7:30 AM - 11:30 AM",
+      target: day === 0 ? "Costco & Sam's Club" : "DeCicco & Wegmans",
+      expected: day === 0 ? "$35-55/hr" : "$24-32/hr",
+      tactic:
+        day === 0
+          ? "Heavy volume morning drop. Camp at wholesale hubs."
+          : "Focus on high-speed premium grocery orders.",
+    };
+  };
+
+  // --- 3. DUAL RATER LOGIC ---
   const getPreGrade = () => {
     const { pay, items, miles } = batchForm;
     if (!pay || !items || !miles) return null;
-
-    const hr = new Date().getHours();
-    const day = new Date().getDay();
-
-    // Estimate total time: 1.2m/item + 2.5m/mile + 10m fixed
-    const estMins = parseInt(items) * 1.2 + parseFloat(miles) * 2.5 + 10;
+    const estMins = parseInt(items) * 1.2 + parseFloat(miles) * 2.5 + 12;
     const estHourly = (parseFloat(pay) / estMins) * 60;
-
-    let grade = "F";
-    let color = "#ef4444";
-    if (estHourly >= 35) {
-      grade = "A";
-      color = "#22c55e";
-    } else if (estHourly >= 28) {
-      grade = "B";
-      color = "#10b981";
-    } else if (estHourly >= 22) {
-      grade = "C";
-      color = "#fbbf24";
-    } else if (estHourly >= 18) {
-      grade = "D";
-      color = "#f97316";
-    }
-
-    // Market Analysis
-    let marketAdvice = "Low chance of better signal soon.";
-    if ((day === 0 || day === 6) && hr < 11)
-      marketAdvice = "85% CHANCE of a better signal in < 15 mins. HOLD.";
-
-    return { grade, estHourly: Math.round(estHourly), color, marketAdvice };
+    let grade =
+      estHourly > 32 ? "A" : estHourly > 24 ? "B" : estHourly > 18 ? "C" : "F";
+    let color =
+      grade === "A"
+        ? "#22c55e"
+        : grade === "B"
+        ? "#10b981"
+        : grade === "C"
+        ? "#fbbf24"
+        : "#ef4444";
+    return { grade, estHourly: Math.round(estHourly), color };
   };
 
-  // --- 3. WHOP & SYSTEM LOGIC ---
+  const getPostRating = () => {
+    const { pay, items, hours, minutes } = batchForm;
+    const totalMins = (parseInt(hours) || 0) * 60 + (parseInt(minutes) || 0);
+    if (!pay || !items || totalMins === 0) return null;
+    const hourly = (parseFloat(pay) / totalMins) * 60;
+    const spi = (totalMins * 60) / parseInt(items);
+    let score = (hourly / 35) * 50 + Math.max(0, 50 - (spi - 60) * 0.5);
+    return {
+      score: Math.min(Math.max(Math.round(score), 0), 100),
+      hourly: Math.round(hourly),
+    };
+  };
+
+  // --- 4. AUTH & NAVIGATION ---
   const handleWhopLogin = () => {
     const cleanUrl = window.location.origin + "/";
     window.location.href = `https://whop.com/oauth?client_id=${WHOP_CLIENT_ID}&redirect_uri=${encodeURIComponent(
@@ -127,13 +148,19 @@ export default function App() {
 
   const startProScan = async () => {
     setIsMagicLoading(true);
-    const phases = ["Syncing GPS...", "Optimizing Neural Map...", "Live!"];
-    phases.forEach((t, i) => setTimeout(() => setMagicText(t), i * 1000));
+    const phases = [
+      "Establishing Neural Link...",
+      "Syncing Satellite Nodes...",
+      "Parsing Market Drops...",
+    ];
+    phases.forEach((t, i) => setTimeout(() => setMagicText(t), i * 900));
 
     navigator.geolocation.getCurrentPosition(async (p) => {
+      const { latitude: lat, longitude: lng } = p.coords;
+      setUserLoc({ lat, lng });
       const { data: raw } = await supabase.rpc("get_nearby_stores", {
-        user_lat: p.coords.latitude,
-        user_lng: p.coords.longitude,
+        user_lat: lat,
+        user_lng: lng,
         radius_miles: 15,
       });
       setTimeout(() => {
@@ -144,12 +171,17 @@ export default function App() {
                 (s) =>
                   !BLOCKED_STORES.some((b) => s.name.toLowerCase().includes(b))
               )
-              .sort((a, b) => b.brand_quality - a.brand_quality)
+              .map((s) => ({
+                ...s,
+                pct: s.brand_quality || 60,
+                dist: (Math.random() * 5).toFixed(1),
+              }))
+              .sort((a, b) => b.pct - a.pct)
           );
           setView("app");
           setIsMagicLoading(false);
         }
-      }, 3000);
+      }, 3500);
     });
   };
 
@@ -165,42 +197,8 @@ export default function App() {
         minHeight: "100vh",
         color: "#f8fafc",
         fontFamily: "Inter, sans-serif",
-        position: "relative",
-        overflowX: "hidden",
       }}
     >
-      {/* --- COOL MOVING BACKGROUND --- */}
-      <div style={{ position: "fixed", inset: 0, zIndex: 0, opacity: 0.4 }}>
-        <motion.div
-          animate={{ scale: [1, 1.2, 1], rotate: [0, 90, 0] }}
-          transition={{ duration: 20, repeat: Infinity }}
-          style={{
-            position: "absolute",
-            top: "-10%",
-            left: "-10%",
-            width: "60%",
-            height: "60%",
-            background:
-              "radial-gradient(circle, #22c55e33 0%, transparent 70%)",
-            filter: "blur(80px)",
-          }}
-        />
-        <motion.div
-          animate={{ scale: [1.2, 1, 1.2], rotate: [0, -90, 0] }}
-          transition={{ duration: 15, repeat: Infinity }}
-          style={{
-            position: "absolute",
-            bottom: "-10%",
-            right: "-10%",
-            width: "60%",
-            height: "60%",
-            background:
-              "radial-gradient(circle, #3b82f622 0%, transparent 70%)",
-            filter: "blur(80px)",
-          }}
-        />
-      </div>
-
       <AnimatePresence>
         {isMagicLoading && (
           <motion.div
@@ -216,14 +214,14 @@ export default function App() {
               justifyContent: "center",
             }}
           >
-            <Cpu size={64} color="#22c55e" className="animate-pulse" />
+            <Cpu size={60} color="#22c55e" className="animate-pulse" />
             <p
               style={{
-                marginTop: "24px",
-                fontSize: "12px",
+                marginTop: "20px",
+                fontSize: "10px",
                 fontWeight: "900",
                 color: "#22c55e",
-                letterSpacing: "3px",
+                letterSpacing: "2px",
               }}
             >
               {magicText.toUpperCase()}
@@ -232,89 +230,140 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* --- HEADER --- */}
+      {/* --- NAV & WEEKLY DASHBOARD --- */}
       {view !== "landing" && (
         <nav
           style={{
-            padding: "20px",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            borderBottom: "1px solid #ffffff10",
+            borderBottom: "1px solid #111827",
             position: "sticky",
             top: 0,
             zIndex: 100,
-            background: "rgba(2,4,8,0.8)",
+            background: "rgba(2, 4, 8, 0.8)",
             backdropFilter: "blur(10px)",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <Zap size={22} color="#22c55e" fill="#22c55e" />
-            <span
+          <div
+            style={{
+              padding: "15px 20px",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <div
+              onClick={() => setView("landing")}
               style={{
-                fontSize: "20px",
-                fontWeight: "1000",
-                letterSpacing: "-1px",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                cursor: "pointer",
               }}
             >
-              BATCH<span style={{ color: "#22c55e" }}>SIGNAL</span>
-            </span>
+              <div
+                style={{
+                  background: "#22c55e",
+                  padding: "5px",
+                  borderRadius: "8px",
+                }}
+              >
+                <Zap size={18} fill="black" />
+              </div>
+              <span style={{ fontSize: "18px", fontWeight: "1000" }}>
+                BATCH<span style={{ color: "#22c55e" }}>SIGNAL</span>
+              </span>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <p
+                style={{
+                  fontSize: "10px",
+                  fontWeight: "900",
+                  color: "#22c55e",
+                  margin: 0,
+                }}
+              >
+                LIVE PERFORMANCE
+              </p>
+              <p style={{ fontSize: "16px", fontWeight: "1000", margin: 0 }}>
+                ${avgHourly}
+                <span style={{ fontSize: "10px", color: "#475569" }}>
+                  /HR AVG
+                </span>
+              </p>
+            </div>
           </div>
-          <div
-            onClick={() => setActiveTab("history")}
-            style={{ cursor: "pointer", textAlign: "right" }}
-          >
-            <p
-              style={{ fontSize: "10px", fontWeight: "900", color: "#22c55e" }}
+          {/*满足 WEEKLY GOAL BAR */}
+          <div style={{ padding: "0 20px 15px" }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                marginBottom: "5px",
+              }}
             >
-              WEEKLY EARNINGS
-            </p>
-            <p style={{ fontSize: "16px", fontWeight: "1000", margin: 0 }}>
-              ${weeklyEarnings.toFixed(2)}
-            </p>
+              <span
+                style={{ fontSize: "9px", fontWeight: "900", color: "#64748b" }}
+              >
+                WEEKLY PROGRESS
+              </span>
+              <span
+                style={{
+                  fontSize: "10px",
+                  fontWeight: "1000",
+                  color: "#22c55e",
+                }}
+              >
+                ${weeklyEarnings.toFixed(2)} / $800
+              </span>
+            </div>
+            <div
+              style={{
+                height: "4px",
+                background: "#0f172a",
+                borderRadius: "10px",
+                overflow: "hidden",
+              }}
+            >
+              <motion.div
+                animate={{ width: `${(weeklyEarnings / 800) * 100}%` }}
+                transition={{ duration: 1 }}
+                style={{
+                  height: "100%",
+                  background: "#22c55e",
+                  boxShadow: "0 0 10px #22c55e",
+                }}
+              />
+            </div>
           </div>
         </nav>
       )}
 
-      {/* --- VIEW: LANDING --- */}
+      {/* --- LANDING --- */}
       {view === "landing" && (
         <div
           style={{
             maxWidth: "800px",
             margin: "0 auto",
-            padding: "80px 20px",
+            padding: "60px 20px",
             textAlign: "center",
-            position: "relative",
-            zIndex: 1,
           }}
         >
           <motion.div
-            initial={{ opacity: 0, y: 30 }}
+            initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
           >
             <h1
               style={{
-                fontSize: "64px",
+                fontSize: "52px",
                 fontWeight: "1000",
-                letterSpacing: "-4px",
+                letterSpacing: "-3px",
                 marginBottom: "20px",
-                lineHeight: "0.85",
+                lineHeight: "0.9",
               }}
             >
-              Precision <br />
-              <span style={{ color: "#22c55e" }}>Intelligence.</span>
+              Stop Guessing.
+              <br />
+              <span style={{ color: "#22c55e" }}>Start Winning.</span>
             </h1>
-            <p
-              style={{
-                color: "#94a3b8",
-                fontSize: "18px",
-                marginBottom: "40px",
-                maxWidth: "500px",
-                margin: "0 auto 40px",
-              }}
-            >
-              Join the elite 1% of shoppers using neural-mapped retail drops.
-            </p>
             {isSubscriber ? (
               <button
                 onClick={startProScan}
@@ -322,15 +371,14 @@ export default function App() {
                   background: "#22c55e",
                   color: "#000",
                   border: "none",
-                  padding: "22px 60px",
-                  borderRadius: "18px",
+                  padding: "20px 50px",
+                  borderRadius: "14px",
                   fontWeight: "1000",
                   fontSize: "18px",
                   cursor: "pointer",
-                  boxShadow: "0 0 40px #22c55e44",
                 }}
               >
-                ENTER COMMAND CENTER
+                INITIALIZE RADAR
               </button>
             ) : (
               <div
@@ -348,8 +396,14 @@ export default function App() {
                   color="#22c55e"
                   style={{ margin: "0 auto 20px" }}
                 />
-                <h2 style={{ fontSize: "24px", fontWeight: "900" }}>
-                  Authentication Required
+                <h2
+                  style={{
+                    fontSize: "24px",
+                    fontWeight: "900",
+                    marginBottom: "10px",
+                  }}
+                >
+                  Subscriber Access Only
                 </h2>
                 <button
                   onClick={() => window.open(CHECKOUT_LINK)}
@@ -362,10 +416,9 @@ export default function App() {
                     fontWeight: "1000",
                     cursor: "pointer",
                     fontSize: "16px",
-                    marginTop: "20px",
                   }}
                 >
-                  UPGRADE TO PRO
+                  UNLOCK ACCESS
                 </button>
                 <button
                   onClick={handleWhopLogin}
@@ -379,7 +432,7 @@ export default function App() {
                     cursor: "pointer",
                   }}
                 >
-                  Already a member? Sign in
+                  Student Sign In
                 </button>
               </div>
             )}
@@ -395,8 +448,6 @@ export default function App() {
             margin: "0 auto",
             padding: "20px",
             paddingBottom: "140px",
-            position: "relative",
-            zIndex: 1,
           }}
         >
           <div
@@ -404,37 +455,159 @@ export default function App() {
               display: "flex",
               background: "#0f172a",
               padding: "5px",
-              borderRadius: "20px",
+              borderRadius: "18px",
               border: "1px solid #1e2937",
               marginBottom: "20px",
             }}
           >
-            {["radar", "rater", "history"].map((t) => (
-              <button
-                key={t}
-                onClick={() => setActiveTab(t)}
-                style={{
-                  flex: 1,
-                  padding: "12px",
-                  borderRadius: "16px",
-                  border: "none",
-                  background: activeTab === t ? "#1e293b" : "transparent",
-                  color: activeTab === t ? "#22c55e" : "#475569",
-                  fontWeight: "900",
-                  fontSize: "11px",
-                  textTransform: "uppercase",
-                }}
-              >
-                {t}
-              </button>
-            ))}
+            <button
+              onClick={() => setActiveTab("radar")}
+              style={{
+                flex: 1,
+                padding: "12px",
+                borderRadius: "14px",
+                border: "none",
+                background: activeTab === "radar" ? "#1e293b" : "transparent",
+                color: activeTab === "radar" ? "#22c55e" : "#475569",
+                fontWeight: "900",
+                fontSize: "10px",
+              }}
+            >
+              NEURAL RADAR
+            </button>
+            <button
+              onClick={() => setActiveTab("rater")}
+              style={{
+                flex: 1,
+                padding: "12px",
+                borderRadius: "14px",
+                border: "none",
+                background: activeTab === "rater" ? "#1e293b" : "transparent",
+                color: activeTab === "rater" ? "#22c55e" : "#475569",
+                fontWeight: "900",
+                fontSize: "10px",
+              }}
+            >
+              BATCH RATER
+            </button>
+            <button
+              onClick={() => setActiveTab("history")}
+              style={{
+                flex: 1,
+                padding: "12px",
+                borderRadius: "14px",
+                border: "none",
+                background: activeTab === "history" ? "#1e293b" : "transparent",
+                color: activeTab === "history" ? "#22c55e" : "#475569",
+                fontWeight: "900",
+                fontSize: "10px",
+              }}
+            >
+              HISTORY
+            </button>
           </div>
 
-          {/* --- RADAR --- */}
+          {/* --- RADAR (WITH INTEGRATED STRATEGY GUIDE) --- */}
           {activeTab === "radar" && (
             <div
               style={{ display: "flex", flexDirection: "column", gap: "12px" }}
             >
+              <div
+                style={{
+                  background:
+                    "linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%)",
+                  padding: "20px",
+                  borderRadius: "28px",
+                  border: "1px solid #312e81",
+                  marginBottom: "10px",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    marginBottom: "12px",
+                  }}
+                >
+                  <Calendar size={16} color="#22c55e" />
+                  <span
+                    style={{
+                      fontSize: "12px",
+                      fontWeight: "900",
+                      color: "white",
+                    }}
+                  >
+                    DAILY STRATEGY GUIDE
+                  </span>
+                </div>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: "10px",
+                    marginBottom: "15px",
+                  }}
+                >
+                  <div
+                    style={{
+                      background: "#020408",
+                      padding: "10px",
+                      borderRadius: "12px",
+                    }}
+                  >
+                    <p
+                      style={{
+                        fontSize: "8px",
+                        color: "#475569",
+                        fontWeight: "900",
+                      }}
+                    >
+                      PRIME WINDOW
+                    </p>
+                    <p style={{ fontSize: "12px", fontWeight: "800" }}>
+                      {getShiftStrategy().window}
+                    </p>
+                  </div>
+                  <div
+                    style={{
+                      background: "#020408",
+                      padding: "10px",
+                      borderRadius: "12px",
+                    }}
+                  >
+                    <p
+                      style={{
+                        fontSize: "8px",
+                        color: "#475569",
+                        fontWeight: "900",
+                      }}
+                    >
+                      TARGET PAY
+                    </p>
+                    <p
+                      style={{
+                        fontSize: "12px",
+                        fontWeight: "800",
+                        color: "#22c55e",
+                      }}
+                    >
+                      {getShiftStrategy().expected}
+                    </p>
+                  </div>
+                </div>
+                <p
+                  style={{
+                    fontSize: "12px",
+                    color: "#94a3b8",
+                    lineHeight: "1.5",
+                    margin: 0,
+                  }}
+                >
+                  "{getShiftStrategy().tactic}"
+                </p>
+              </div>
+
               {stores.map((s) => (
                 <div
                   key={s.id}
@@ -442,11 +615,8 @@ export default function App() {
                     background: "#0f172a",
                     padding: "24px",
                     borderRadius: "28px",
-                    border: "1px solid #1e2937",
-                    borderLeft:
-                      s.brand_quality > 85
-                        ? "4px solid #22c55e"
-                        : "1px solid #1e2937",
+                    border:
+                      s.pct > 85 ? "2px solid #22c55e" : "1px solid #1e2937",
                   }}
                 >
                   <div
@@ -457,38 +627,45 @@ export default function App() {
                     }}
                   >
                     <div>
-                      <span
+                      <div
                         style={{
-                          fontSize: "10px",
+                          fontSize: "9px",
                           fontWeight: "900",
-                          color: "#22c55e",
+                          color: s.pct > 80 ? "#22c55e" : "#fbbf24",
+                          marginBottom: "8px",
                         }}
                       >
-                        {s.brand_quality > 85 ? "🔥 HIGH YIELD" : "📡 ACTIVE"}
-                      </span>
+                        {s.pct > 0 ? "LIVE SIGNAL" : "OFFLINE"}
+                      </div>
                       <h3
                         style={{
-                          fontSize: "20px",
+                          fontSize: "18px",
                           fontWeight: "800",
-                          margin: "4px 0",
-                          color: "white",
+                          margin: 0,
                         }}
                       >
                         {s.name}
                       </h3>
-                      <p style={{ fontSize: "11px", color: "#64748b" }}>
-                        {s.address || "Area Verified"}
+                      <p
+                        style={{
+                          fontSize: "11px",
+                          color: "#64748b",
+                          marginTop: "4px",
+                        }}
+                      >
+                        {s.dist} miles away •{" "}
+                        {s.typical_peak_hours || "Peak patterns active"}
                       </p>
                     </div>
                     <div style={{ textAlign: "right" }}>
                       <div
                         style={{
-                          fontSize: "32px",
+                          fontSize: "38px",
                           fontWeight: "1000",
-                          color: "#22c55e",
+                          color: s.pct > 80 ? "#22c55e" : "#fbbf24",
                         }}
                       >
-                        {s.brand_quality}%
+                        {s.pct}%
                       </div>
                     </div>
                   </div>
@@ -507,13 +684,13 @@ export default function App() {
                   onClick={() => setRaterMode("pre")}
                   style={{
                     flex: 1,
-                    padding: "10px",
-                    borderRadius: "12px",
-                    border: "1px solid #1e2937",
-                    background: raterMode === "pre" ? "#22c55e" : "transparent",
+                    padding: "12px",
+                    borderRadius: "14px",
+                    border: "none",
+                    background: raterMode === "pre" ? "#22c55e" : "#0f172a",
                     color: raterMode === "pre" ? "black" : "white",
                     fontWeight: "900",
-                    fontSize: "11px",
+                    fontSize: "10px",
                   }}
                 >
                   PRE-ACCEPTANCE
@@ -522,14 +699,13 @@ export default function App() {
                   onClick={() => setRaterMode("post")}
                   style={{
                     flex: 1,
-                    padding: "10px",
-                    borderRadius: "12px",
-                    border: "1px solid #1e2937",
-                    background:
-                      raterMode === "post" ? "#22c55e" : "transparent",
+                    padding: "12px",
+                    borderRadius: "14px",
+                    border: "none",
+                    background: raterMode === "post" ? "#22c55e" : "#0f172a",
                     color: raterMode === "post" ? "black" : "white",
                     fontWeight: "900",
-                    fontSize: "11px",
+                    fontSize: "10px",
                   }}
                 >
                   POST-JOB GRADER
@@ -550,41 +726,48 @@ export default function App() {
                     padding: "25px",
                     borderRadius: "24px",
                     textAlign: "center",
-                    marginBottom: "25px",
                     border: "1px solid #1e2937",
+                    marginBottom: "25px",
                   }}
                 >
-                  {raterMode === "pre" && getPreGrade() ? (
+                  {raterMode === "pre" ? (
+                    getPreGrade() ? (
+                      <div>
+                        <div
+                          style={{
+                            fontSize: "64px",
+                            fontWeight: "1000",
+                            color: getPreGrade().color,
+                          }}
+                        >
+                          {getPreGrade().grade}
+                        </div>
+                        <p style={{ fontSize: "18px", fontWeight: "900" }}>
+                          Est. ${getPreGrade().estHourly}/hr
+                        </p>
+                      </div>
+                    ) : (
+                      <p style={{ color: "#475569" }}>Input offer details.</p>
+                    )
+                  ) : getPostRating() ? (
                     <div>
                       <div
                         style={{
-                          fontSize: "64px",
+                          fontSize: "48px",
                           fontWeight: "1000",
-                          color: getPreGrade().color,
+                          color: "#22c55e",
                         }}
                       >
-                        {getPreGrade().grade}
+                        {getPostRating().score}%
                       </div>
-                      <p style={{ fontSize: "18px", fontWeight: "900" }}>
-                        Est. ${getPreGrade().estHourly}/hr
-                      </p>
-                      <p
-                        style={{
-                          fontSize: "12px",
-                          color: "#94a3b8",
-                          marginTop: "10px",
-                        }}
-                      >
-                        {getPreGrade().marketAdvice}
+                      <p style={{ fontSize: "14px", fontWeight: "800" }}>
+                        Efficiency Rating
                       </p>
                     </div>
                   ) : (
-                    <p style={{ color: "#475569" }}>
-                      Awaiting neural analysis...
-                    </p>
+                    <p style={{ color: "#475569" }}>Enter trip performance.</p>
                   )}
                 </div>
-
                 <div
                   style={{
                     display: "flex",
@@ -630,23 +813,23 @@ export default function App() {
                       }}
                     />
                   </div>
-                  <input
-                    type="number"
-                    value={batchForm.miles}
-                    onChange={(e) =>
-                      setBatchForm({ ...batchForm, miles: e.target.value })
-                    }
-                    placeholder="Total Miles"
-                    style={{
-                      background: "#030508",
-                      border: "1px solid #1e2937",
-                      padding: "15px",
-                      borderRadius: "15px",
-                      color: "white",
-                    }}
-                  />
-
-                  {raterMode === "post" && (
+                  {raterMode === "pre" ? (
+                    <input
+                      type="number"
+                      value={batchForm.miles}
+                      onChange={(e) =>
+                        setBatchForm({ ...batchForm, miles: e.target.value })
+                      }
+                      placeholder="Total Miles"
+                      style={{
+                        background: "#030508",
+                        border: "1px solid #1e2937",
+                        padding: "15px",
+                        borderRadius: "15px",
+                        color: "white",
+                      }}
+                    />
+                  ) : (
                     <div
                       style={{
                         display: "grid",
@@ -689,19 +872,21 @@ export default function App() {
                       />
                     </div>
                   )}
-
                   <button
                     onClick={() => {
+                      const totalMins =
+                        (parseInt(batchForm.hours) || 0) * 60 +
+                        (parseInt(batchForm.minutes) || 0);
                       setWeeklyBatches([
                         ...weeklyBatches,
                         {
                           id: Date.now(),
                           payout: batchForm.pay,
                           items: batchForm.items,
-                          store: batchForm.storeName || "Retailer",
+                          duration_mins: totalMins,
+                          store: "Verified Retailer",
                         },
                       ]);
-                      alert("Batch Logged!");
                       setActiveTab("history");
                     }}
                     style={{
@@ -712,29 +897,29 @@ export default function App() {
                       borderRadius: "16px",
                       fontWeight: "1000",
                       marginTop: "10px",
-                      cursor: "pointer",
                     }}
                   >
-                    LOG COMPLETED BATCH
+                    LOG TO COMMUNITY
                   </button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* --- BATCH HISTORY (FEATURE 2) --- */}
+          {/* --- HISTORY & EDIT --- */}
           {activeTab === "history" && (
             <div
               style={{ display: "flex", flexDirection: "column", gap: "10px" }}
             >
               <h2
                 style={{
-                  fontSize: "18px",
+                  fontSize: "16px",
                   fontWeight: "900",
                   color: "#22c55e",
+                  textTransform: "uppercase",
                 }}
               >
-                Weekly Log
+                Weekly Activity
               </h2>
               {weeklyBatches.length === 0 ? (
                 <p
@@ -744,7 +929,7 @@ export default function App() {
                     marginTop: "40px",
                   }}
                 >
-                  No batches logged this week.
+                  No batches logged yet.
                 </p>
               ) : (
                 weeklyBatches.map((b) => (
@@ -772,12 +957,12 @@ export default function App() {
                       </p>
                       <p
                         style={{
-                          fontSize: "11px",
+                          fontSize: "10px",
                           color: "#475569",
                           margin: 0,
                         }}
                       >
-                        {b.items} items • {b.store}
+                        {b.items} items • {b.duration_mins} mins
                       </p>
                     </div>
                     <button
@@ -790,7 +975,6 @@ export default function App() {
                         background: "none",
                         border: "none",
                         color: "#ef4444",
-                        cursor: "pointer",
                       }}
                     >
                       <Trash2 size={16} />
@@ -821,9 +1005,7 @@ export default function App() {
         }}
       >
         <button
-          onClick={() =>
-            alert("Predictive tool. Not affiliated with Instacart.")
-          }
+          onClick={() => setShowLegal(true)}
           style={{
             background: "none",
             border: "none",
